@@ -55,7 +55,10 @@ This serves a genuinely small LLM (Qwen2.5-0.5B, 4-bit GGUF) via llama.cpp's Ope
 
 6. Clean up:
    ```bash
-   minikube delete
+   kubectl delete pod curl-test --ignore-not-found   # remove the in-cluster test pod if it lingered
+   # Ctrl+C any running kubectl port-forward and kubectl logs -f terminals
+   kubectl delete -f k8s/                            # remove the Deployment, Service, HPA (and Ingress if applied)
+   minikube delete                                   # or tear down the whole cluster
    ```
 
 ## Verifying load balancing across the two instances
@@ -83,3 +86,38 @@ Both pods' logs show `launch_slot_ ... processing task` lines, confirming reques
 - Probes: llama.cpp's server exposes /health; the Deployment uses it for liveness and readiness. initialDelaySeconds is generous because the model must load before the server is ready.
 - Autoscaling: the HPA scales on CPU (min 2, max 4, target 70%). On a real GPU cluster you would scale on a GPU-aware metric like queue depth instead, since CPU is not the bottleneck for LLM inference.
 - The manifests are the transferable part: swap the image for a vLLM GPU image and add a GPU resource request, and the same Deployment/Service/HPA pattern serves a large model on GPU nodes.
+
+## Smarter load balancing with an nginx ingress (EWMA)
+
+The Service (above) balances via kube-proxy, which in default iptables mode uses random per-request selection. For a smarter algorithm, put an nginx ingress in front of the Service and select the load-balancing method with an annotation.
+
+`k8s/ingress.yaml` uses EWMA (Peak EWMA), which routes more traffic to the backends replying fastest (least loaded). This suits variable-duration LLM requests better than blind round-robin or random, because it accounts for how long each backend is taking.
+
+```bash
+# enable the nginx ingress controller (one-time)
+minikube addons enable ingress
+kubectl get pods -n ingress-nginx        # wait for the controller pod to be Running
+
+# apply the ingress
+kubectl apply -f k8s/ingress.yaml
+kubectl get ingress                      # wait until an ADDRESS appears
+```
+
+Test it. On the minikube Docker driver (e.g. WSL2), the ingress IP is not directly reachable from the host, so port-forward to the controller:
+
+```bash
+# terminal A (leave running)
+kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8080:80
+
+# terminal B: route by hostname (the ingress matches the Host header)
+for i in 1 2 3 4 5 6; do
+  curl -s -H "Host: llm-service.local" http://localhost:8080/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"messages":[{"role":"user","content":"hi"}],"max_tokens":5}'
+  echo
+done
+```
+
+Traffic now flows client -> nginx ingress (EWMA) -> Service -> pods, instead of straight to the Service (kube-proxy random). With only two pods and a tiny model the visible difference is small; the point is that the load-balancing algorithm is configurable and EWMA is a better fit for variable-length LLM requests.
+
+Note on terminology: this is the nginx INGRESS controller's EWMA, configured by annotation. It is a different layer from a standalone Nginx reverse proxy with a `least_conn` upstream; the ingress controller generates its own config from the Ingress resource.

@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-service-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Load-balancing algorithm for this Ingress. The nginx ingress controller
+    # defaults to round_robin. "ewma" (Peak EWMA) routes more traffic to the
+    # backends replying fastest (least loaded), which suits variable-duration
+    # LLM requests better than blind round-robin.
+    nginx.ingress.kubernetes.io/load-balance: "ewma"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: llm-service.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: llm-service
+                port:
+                  number: 8000
