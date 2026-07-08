@@ -1,0 +1,4 @@
+*.gguf
+models/
+.DS_Store
+*.log
