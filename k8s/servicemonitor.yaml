@@ -3,12 +3,12 @@ kind: ServiceMonitor
 metadata:
   name: llm-service
   labels:
-    release: monitoring        # REQUIRED: the stack only picks up ServiceMonitors with its release label
+    release: monitoring        # required: the stack only adopts ServiceMonitors with its Helm release label
 spec:
   selector:
     matchLabels:
-      app: llm-service         # matches your Service's... see note below
+      app: llm-service         # matches the labels on the SERVICE OBJECT's metadata (not pod labels)
   endpoints:
-    - port: http               # the port name from step 2
+    - port: http               # the Service's named port
       interval: 15s
       path: /metrics

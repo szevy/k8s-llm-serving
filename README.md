@@ -247,3 +247,20 @@ Multiple port-forwards run side by side in separate terminals; they do not confl
 | 8000 | service/llm-service 8000 | poke the LLM API / metrics endpoint (pins to ONE pod) |
 | 9090 | monitoring-kube-prometheus-prometheus 9090 | Prometheus UI (targets, queries) |
 | 3000 | monitoring-grafana 80 | Grafana UI (dashboards) |
+
+
+## CI/CD (GitHub Actions)
+
+`.github/workflows/ci.yaml` runs three jobs on pushes and pull requests to main:
+
+**build-and-smoke-test**
+1. Builds the Docker image (catches Dockerfile breakage, e.g. a wrong ENTRYPOINT path, in CI instead of at deploy time).
+2. Smoke-tests the binary (`--help` must print).
+3. Starts the server on the CI runner and polls /health until the model loads (the same startup-delay reasoning as the readiness probe), failing the build if it never becomes healthy.
+4. Validates the core Kubernetes manifests with a client-side dry run. The ServiceMonitor and dashboard ConfigMap are excluded here because their custom resource definitions only exist in a cluster with the monitoring stack installed; they are exercised on the real cluster instead.
+
+**deploy-test** (integration test)
+Creates a throwaway kind cluster (Kubernetes in Docker) on the runner, loads the image, applies the core manifests, requires the rollout to become healthy, and verifies /health answers through the Service from inside the cluster. Proves the manifests deploy cleanly end to end on a real API server, not just parse.
+
+**push-to-registry** (continuous delivery of the artifact)
+On green commits to main only: builds and pushes the image to GitHub Container Registry (ghcr.io), tagged with the commit SHA and as latest. Every green commit produces a versioned, pullable artifact. Full CD to a persistent cluster would follow the GitOps pattern (ArgoCD/Flux watching the repo); there is no persistent cluster in this project, so delivery stops at the registry.

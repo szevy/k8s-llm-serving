@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Build the Docker image
+        run: docker build -t llm-service:latest .
+
+      - name: Smoke test, binary runs and prints help
+        run: docker run --rm --entrypoint /app/llama-server llm-service:latest --help | head -5
+
+      - name: Smoke test, server starts and answers /health
+        run: |
+          docker run -d --name smoke -p 8000:8000 llm-service:latest
+          # the server reports unhealthy until the model finishes loading, so poll
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "health check passed"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "server never became healthy"; docker logs smoke; exit 1
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f smoke || true
+
+      - name: Validate core Kubernetes manifests (client-side dry run)
+        # ServiceMonitor and the dashboard ConfigMap are validated at deploy time
+        # instead, because their custom resource definitions only exist in a
+        # cluster with the monitoring stack installed.
+        run: |
+          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          ./kubectl apply --dry-run=client -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/hpa.yaml -f k8s/ingress.yaml
+
+  deploy-test:
+    # Integration test: deploy the manifests to a throwaway kind cluster
+    # (Kubernetes in Docker) and require the rollout to become healthy.
+    runs-on: ubuntu-latest
+    needs: build-and-smoke-test
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Create a kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+
+      - name: Build the image and load it into the cluster
+        run: |
+          docker build -t llm-service:latest .
+          kind load docker-image llm-service:latest --name ci
+
+      - name: Deploy the core manifests
+        run: kubectl apply -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/hpa.yaml
+
+      - name: Wait for the rollout to become healthy
+        run: kubectl rollout status deployment/llm-service --timeout=600s
+
+      - name: Verify the service answers from inside the cluster
+        run: |
+          kubectl run curl-test --image=curlimages/curl --restart=Never --rm -i -- \
+            curl -sf http://llm-service:8000/health
+
+  push-to-registry:
+    # Continuous delivery of the artifact: every green commit on main is
+    # published to GitHub Container Registry, tagged with the commit SHA
+    # and as latest.
+    runs-on: ubuntu-latest
+    needs: [build-and-smoke-test, deploy-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build, tag, and push
+        run: |
+          IMAGE=ghcr.io/${{ github.repository_owner }}/llm-service
+          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+          docker push $IMAGE:${{ github.sha }}
+          docker push $IMAGE:latest
