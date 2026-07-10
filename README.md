@@ -264,3 +264,53 @@ Creates a throwaway kind cluster (Kubernetes in Docker) on the runner, loads the
 
 **push-to-registry** (continuous delivery of the artifact)
 On green commits to main only: builds and pushes the image to GitHub Container Registry (ghcr.io), tagged with the commit SHA and as latest. Every green commit produces a versioned, pullable artifact. Full CD to a persistent cluster would follow the GitOps pattern (ArgoCD/Flux watching the repo); there is no persistent cluster in this project, so delivery stops at the registry.
+
+## Quantising the model from the FP16 original
+
+Instead of downloading a pre-quantised GGUF, the model can be quantised from the original FP16 weights using llama.cpp's standard pipeline, run via their Docker tools image (no local llama.cpp build needed). `./quantise.sh` reproduces the whole process; the steps it runs:
+
+1. **Download the FP16 original** (~943MB safetensors plus tokenizer/config, HuggingFace format):
+   ```bash
+   hf download Qwen/Qwen2.5-0.5B-Instruct --local-dir quantisation/qwen-fp16
+   ```
+
+2. **Convert HuggingFace format to GGUF** (format repackaging only; weights stay FP16, size stays ~949MB). GGUF is llama.cpp's single-file format bundling weights, architecture metadata, and tokenizer:
+   ```bash
+   docker run --rm -v "$(pwd)/quantisation:/models" ghcr.io/ggml-org/llama.cpp:full \
+     --convert --outtype f16 --outfile /models/qwen-f16.gguf /models/qwen-fp16/
+   ```
+
+3. **Quantise to Q4_K_M** (the actual quantisation: FP16 weights become ~4-bit integers; 949MB to ~380MB):
+   ```bash
+   docker run --rm -v "$(pwd)/quantisation:/models" ghcr.io/ggml-org/llama.cpp:full \
+     --quantize /models/qwen-f16.gguf /models/qwen-q4_k_m.gguf Q4_K_M
+   ```
+
+4. **Serve the artifact**: swap the Dockerfile's model line from the ADD-from-HuggingFace to copying the locally produced artifact, then the usual build/load/rollout serves it on the cluster:
+   ```dockerfile
+   # default (CI-compatible): download the published pre-quantised model
+   ADD https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf /models/model.gguf
+   # self-quantised variant (local builds): use the locally produced artifact instead
+   # COPY quantisation/qwen-q4_k_m.gguf /models/model.gguf
+   ```
+   The committed Dockerfile keeps the ADD form because CI builds on a clean runner where the gitignored `quantisation/` artifact does not exist; the COPY form is the local variant after running `./quantise.sh`.
+
+5. **Build, deploy, and verify on the cluster** (with the COPY line active locally):
+   ```bash
+   docker build -t llm-service:latest .
+   minikube image load llm-service:latest
+   kubectl rollout restart deployment/llm-service
+   kubectl get pods                     # wait for the new generation's pods, 1/1 Running
+
+   kubectl port-forward service/llm-service 8000:8000
+   # in another terminal, send a chat request to the self-quantised model:
+   curl -s http://localhost:8000/v1/chat/completions -H "Content-Type: application/json" \
+     -d '{"messages":[{"role":"user","content":"Introduce yourself in one sentence."}],"max_tokens":40}'
+   ```
+   A coherent JSON completion confirms the end-to-end pipeline: FP16 download, format conversion, Q4_K_M quantisation, image build, rolling update, and serving, all with the self-quantised artifact.
+
+Notes:
+- **Q4_K_M decoded**: Q4 = ~4-bit precision class; K = llama.cpp's block-wise scheme with per-block scale factors; M = the medium variant, keeping critical layers at higher precision. Effective ~4.8 bits per weight (hence 380MB rather than 949/4), and the community's default quality/size trade-off.
+- **Choosing a level**: Q4_K_M is the standard starting point; step up (Q5_K_M, Q8_0) if quality matters and memory allows, down (Q3_K_M) only when memory forces it. Quantisation loss is permanent, grows steeply below 4-bit, and hits small models proportionally harder than large ones.
+- **Honest scope**: this is GGUF's standard calibration-free quantisation. Calibration-based methods (GPTQ/AWQ, used for vLLM-served models) additionally compensate quantisation error against sample data; that pipeline is not run here.
+- The `quantisation/` directory is gitignored: model artifacts are reproducible outputs and do not belong in git. The repo carries the recipe (this script), not the binaries.
