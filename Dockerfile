@@ -9,4 +9,4 @@ ADD https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-
 # llama.cpp server listens on 8000, exposes an OpenAI-compatible /v1 API
 # plus a /health endpoint (used by the Kubernetes probes).
 EXPOSE 8000
-ENTRYPOINT ["/app/llama-server", "-m", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8000", "-c", "2048"]
+ENTRYPOINT ["/app/llama-server", "-m", "/models/model.gguf", "--host", "0.0.0.0", "--port", "8000", "-c", "2048", "--metrics"]

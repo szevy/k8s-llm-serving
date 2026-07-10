@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-serving-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  llm-serving.json: |
+    {
+      "title": "LLM Serving",
+      "uid": "llm-serving",
+      "schemaVersion": 39,
+      "refresh": "10s",
+      "time": { "from": "now-30m", "to": "now" },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Generation rate (tokens/sec) per pod",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            { "expr": "rate(llamacpp:tokens_predicted_total[5m])", "legendFormat": "{{pod}}" }
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Total tokens generated per pod",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "targets": [
+            { "expr": "llamacpp:tokens_predicted_total", "legendFormat": "{{pod}}" }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "Prompt tokens processed per pod",
+          "type": "timeseries",
+          "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            { "expr": "llamacpp:prompt_tokens_total", "legendFormat": "{{pod}}" }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Decode calls/sec per pod",
+          "type": "timeseries",
+          "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+          "targets": [
+            { "expr": "rate(llamacpp:n_decode_total[5m])", "legendFormat": "{{pod}}" }
+          ]
+        }
+      ]
+    }

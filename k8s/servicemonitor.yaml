@@ -1,0 +1,14 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: llm-service
+  labels:
+    release: monitoring        # REQUIRED: the stack only picks up ServiceMonitors with its release label
+spec:
+  selector:
+    matchLabels:
+      app: llm-service         # matches your Service's... see note below
+  endpoints:
+    - port: http               # the port name from step 2
+      interval: 15s
+      path: /metrics
