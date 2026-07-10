@@ -1,0 +1,19 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llm-service-alerts
+  namespace: monitoring
+  labels:
+    release: monitoring        # required: the stack only adopts rules carrying its Helm release label
+spec:
+  groups:
+    - name: llm-service
+      rules:
+        - alert: LLMServiceReplicasUnavailable
+          expr: kube_deployment_status_replicas_available{deployment="llm-service", namespace="default"} < 2
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "llm-service has fewer than 2 available replicas"
+            description: "Available replicas have been below 2 for 2 minutes; the deployment is degraded."

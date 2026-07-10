@@ -314,3 +314,22 @@ Notes:
 - **Choosing a level**: Q4_K_M is the standard starting point; step up (Q5_K_M, Q8_0) if quality matters and memory allows, down (Q3_K_M) only when memory forces it. Quantisation loss is permanent, grows steeply below 4-bit, and hits small models proportionally harder than large ones.
 - **Honest scope**: this is GGUF's standard calibration-free quantisation. Calibration-based methods (GPTQ/AWQ, used for vLLM-served models) additionally compensate quantisation error against sample data; that pipeline is not run here.
 - The `quantisation/` directory is gitignored: model artifacts are reproducible outputs and do not belong in git. The repo carries the recipe (this script), not the binaries.
+
+## Alerting and resilience testing (PrometheusRule)
+
+`k8s/alertrule.yaml` defines an alert: fewer than 2 available llm-service replicas, held for 2 minutes, fires a warning. The metric comes from kube-state-metrics (part of the monitoring stack); the `for: 2m` confirmation window prevents flapping pods from spamming alerts.
+
+```bash
+kubectl apply -f k8s/alertrule.yaml
+# Prometheus UI -> http://localhost:9090/alerts (via the port-forward): the rule
+# appears as INACTIVE (loaded, condition currently false). Alert states:
+# INACTIVE = condition false (healthy), PENDING = condition true and the
+# confirmation timer running, FIRING = condition held for the full window.
+```
+
+Deliberately injecting failures to trigger the alert doubles as a resilience test of the deployment config, and the config passed more of it than expected: two of the three injected failures were repaired by self-healing faster than the alert's 2 minute confirmation window.
+- `kubectl scale deployment llm-service --replicas=1` alone does NOT fire it: the HPA enforces minReplicas 2 and restores the second pod within seconds, faster than the 2 minute confirmation.
+- Deleting a pod during a stalled broken-image rollout also does not fire it: the old ReplicaSet immediately recreates its pod from the working image.
+- To actually observe FIRING, remove the self-healing first: `kubectl delete hpa llm-service`, then scale to 1; the condition now holds, and the alert walks INACTIVE to PENDING to FIRING. Restore with `kubectl apply -f k8s/hpa.yaml`, whose reconciliation raises the replica floor back to 2 and the alert returns to INACTIVE.
+
+The takeaway the experiment demonstrates: alerting and self-healing are layers. Reconciliation (HPA, ReplicaSet) silently repairs what it can, faster than a human would even be notified; alerts exist for the failures self-healing cannot fix. In production the FIRING state would route through Alertmanager to a pager or Slack; here it is observed in the Prometheus UI.
