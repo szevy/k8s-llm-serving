@@ -53,11 +53,11 @@ This serves a genuinely small LLM (Qwen2.5-0.5B, 4-bit GGUF) via llama.cpp's Ope
      -d '{"messages":[{"role":"user","content":"Say hello in one sentence."}]}'
    ```
 
-6. Clean up:
+6. Clean up (see the full Cleanup section at the end of this README once the monitoring stack and quantisation artifacts exist):
    ```bash
    kubectl delete pod curl-test --ignore-not-found   # remove the in-cluster test pod if it lingered
    # Ctrl+C any running kubectl port-forward and kubectl logs -f terminals
-   kubectl delete -f k8s/                            # remove the Deployment, Service, HPA (and Ingress if applied)
+   kubectl delete -f k8s/                            # remove the app's resources
    minikube delete                                   # or tear down the whole cluster
    ```
 
@@ -333,3 +333,30 @@ Deliberately injecting failures to trigger the alert doubles as a resilience tes
 - To actually observe FIRING, remove the self-healing first: `kubectl delete hpa llm-service`, then scale to 1; the condition now holds, and the alert walks INACTIVE to PENDING to FIRING. Restore with `kubectl apply -f k8s/hpa.yaml`, whose reconciliation raises the replica floor back to 2 and the alert returns to INACTIVE.
 
 The takeaway the experiment demonstrates: alerting and self-healing are layers. Reconciliation (HPA, ReplicaSet) silently repairs what it can, faster than a human would even be notified; alerts exist for the failures self-healing cannot fix. In production the FIRING state would route through Alertmanager to a pager or Slack; here it is observed in the Prometheus UI.
+
+
+## Cleanup
+
+Everything this README creates, and how to remove it. `minikube delete` alone removes all in-cluster resources (app, monitoring stack, alert rule); the surgical alternative keeps the cluster:
+
+```bash
+# In-cluster resources (surgical; skipped entirely if deleting the cluster):
+kubectl delete -f k8s/                       # deployment, service, hpa, ingress, servicemonitor, alertrule, dashboard
+helm uninstall monitoring -n monitoring      # removes the Prometheus/Grafana RELEASE (Helm the tool stays installed)
+kubectl delete namespace monitoring
+kubectl delete pod curl-test --ignore-not-found
+
+# Or the whole cluster in one step:
+minikube delete
+
+# Docker disk space (images accumulate; the tools image alone is ~2GB):
+docker rmi llm-service:latest ghcr.io/ggml-org/llama.cpp:full ghcr.io/ggml-org/llama.cpp:server
+docker system prune                          # stopped containers, dangling images, build cache
+
+# Local model artifacts (~2.3GB, all reproducible via ./quantise.sh):
+rm -rf quantisation/
+# or keep only the final artifact:
+# rm -rf quantisation/qwen-fp16 quantisation/qwen-f16.gguf
+```
+
+Note on `helm uninstall monitoring`: this removes the installed release named `monitoring`, not Helm itself; the CLI and its repos remain for future installs. The GitHub repo and the images published to ghcr.io are unaffected by any of the above.
