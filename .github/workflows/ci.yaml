@@ -37,14 +37,14 @@ jobs:
         run: docker rm -f smoke || true
 
       - name: Validate core Kubernetes manifests (client-side dry run)
-        # ServiceMonitor and the dashboard ConfigMap are validated at deploy time
-        # instead, because their custom resource definitions only exist in a
-        # cluster with the monitoring stack installed.
+        # Parse-level validation only (no cluster is available in this job for
+        # schema validation); full validation happens in deploy-test, where the
+        # manifests are applied to a real kind cluster.
         run: |
           curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
           chmod +x kubectl
-          ./kubectl apply --dry-run=client -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/hpa.yaml -f k8s/ingress.yaml
-
+          ./kubectl apply --dry-run=client --validate=false -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/hpa.yaml -f k8s/ingress.yaml
+          
   deploy-test:
     # Integration test: deploy the manifests to a throwaway kind cluster
     # (Kubernetes in Docker) and require the rollout to become healthy.
