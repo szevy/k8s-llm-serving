@@ -36,15 +36,14 @@ jobs:
         if: always()
         run: docker rm -f smoke || true
 
-      - name: Validate core Kubernetes manifests (client-side dry run)
-        # Parse-level validation only (no cluster is available in this job for
-        # schema validation); full validation happens in deploy-test, where the
-        # manifests are applied to a real kind cluster.
+      - name: Validate core Kubernetes manifests (offline schema check)
+        # kubeconform validates against bundled schemas with no cluster needed.
+        # The ServiceMonitor and dashboard ConfigMap are exercised on a real
+        # cluster instead; full deploy validation happens in the deploy-test job.
         run: |
-          curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-          chmod +x kubectl
-          ./kubectl apply --dry-run=client --validate=false -f k8s/deployment.yaml -f k8s/service.yaml -f k8s/hpa.yaml -f k8s/ingress.yaml
-          
+          curl -sL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -summary k8s/deployment.yaml k8s/service.yaml k8s/hpa.yaml k8s/ingress.yaml
+
   deploy-test:
     # Integration test: deploy the manifests to a throwaway kind cluster
     # (Kubernetes in Docker) and require the rollout to become healthy.
